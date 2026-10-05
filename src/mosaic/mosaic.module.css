@@ -1,0 +1,17 @@
+.productCanvas {
+  display: block;
+  height: 100%;
+  width: 100%;
+}
+
+.infiniteLayer {
+  inset: 0;
+  pointer-events: none;
+  position: absolute;
+}
+
+.infiniteCanvas {
+  display: block;
+  height: 100%;
+  width: 100%;
+}
