@@ -1,11 +1,13 @@
 import { describe, expect, it } from "vitest";
 
 import { createCellStyles, evaluateCell, gradientParam, isCellPruned, touchesFrame, unwarpParam, warpParam } from "./cells";
+import { isCellExploded, visibleCells } from "./framing";
 import { BAYER_MATRIX, computeDitherMask } from "./dither";
 import { encodeGif } from "./gif-encoder";
 import { readMosaicParams } from "./params";
+import { scanlineStrokes } from "./pattern-texture";
 import { buildMosaicScene } from "./scene";
-import { tessellate, type Rect } from "./tessellate";
+import { isFeasibleLength, tessellate, type Rect } from "./tessellate";
 
 const ROOT: Rect = { height: 1080, width: 1920, x: -960, y: -540 };
 
@@ -25,7 +27,8 @@ describe("tessellate", () => {
 
   it.each(cases)("tiles the root with zero gaps, no overlap and flush edges (%o)", (overrides) => {
     const params = readMosaicParams({
-      "layout.cellSize": [100, 500],
+      "layout.cellHeight": [100, 500],
+      "layout.cellWidth": [100, 500],
       "layout.density": overrides.density ?? 0.6,
       "layout.seed": overrides.seed,
       "layout.snap": overrides.snap ?? 0,
@@ -48,7 +51,7 @@ describe("tessellate", () => {
   });
 
   it("splits every cell larger than the maximum size", () => {
-    const params = readMosaicParams({ "layout.cellSize": [80, 300], "layout.density": 0, "layout.seed": 5 });
+    const params = readMosaicParams({ "layout.cellHeight": [80, 300], "layout.cellWidth": [80, 300], "layout.density": 0, "layout.seed": 5 });
     for (const cell of tessellate(ROOT, params.layout)) {
       expect(cell.width <= 300 || cell.width < 160).toBe(true);
       expect(cell.height <= 300 || cell.height < 160).toBe(true);
@@ -56,10 +59,91 @@ describe("tessellate", () => {
   });
 
   it("snaps internal cuts to the module grid", () => {
-    const params = readMosaicParams({ "layout.cellSize": [120, 480], "layout.seed": 9, "layout.snap": 120 });
+    const params = readMosaicParams({ "layout.cellHeight": [120, 480], "layout.cellWidth": [120, 480], "layout.seed": 9, "layout.snap": 120 });
     for (const cell of tessellate(ROOT, params.layout)) {
       expect(((cell.x - ROOT.x) / 120) % 1).toBeCloseTo(0, 9);
       expect(((cell.y - ROOT.y) / 120) % 1).toBeCloseTo(0, 9);
+    }
+  });
+
+  function expectTiling(cells: readonly Rect[], root: Rect) {
+    const area = cells.reduce((sum, cell) => sum + cell.width * cell.height, 0);
+    expect(area).toBeCloseTo(root.width * root.height, 4);
+    for (let i = 0; i < cells.length; i += 1) {
+      for (let j = i + 1; j < cells.length; j += 1) expect(overlapArea(cells[i]!, cells[j]!)).toBeLessThan(1e-6);
+    }
+  }
+
+  it.each([1, 2, 3, 4, 5, 6])("keeps independent width and height limits on every cell (seed %i)", (seed) => {
+    const params = readMosaicParams({
+      "layout.cellHeight": [150, 260],
+      "layout.cellWidth": [100, 300],
+      "layout.density": 0.8,
+      "layout.seed": seed,
+    });
+    const cells = tessellate(ROOT, params.layout);
+    expectTiling(cells, ROOT);
+    for (const cell of cells) {
+      expect(cell.width).toBeGreaterThanOrEqual(100 - 1e-6);
+      expect(cell.width).toBeLessThanOrEqual(300 + 1e-6);
+      expect(cell.height).toBeGreaterThanOrEqual(150 - 1e-6);
+      expect(cell.height).toBeLessThanOrEqual(260 + 1e-6);
+    }
+  });
+
+  it("forces elongated horizontal strips from a narrow height and wide width range", () => {
+    const portrait: Rect = { height: 1920, width: 1080, x: -540, y: -960 };
+    const params = readMosaicParams({ "layout.cellHeight": [40, 120], "layout.cellWidth": [500, 1080], "layout.seed": 4 });
+    const cells = tessellate(portrait, params.layout);
+    expectTiling(cells, portrait);
+    for (const cell of cells) {
+      expect(cell.height).toBeLessThanOrEqual(120 + 1e-6);
+      expect(cell.width).toBeGreaterThanOrEqual(500 - 1e-6);
+      expect(cell.width / cell.height).toBeGreaterThan(4);
+    }
+  });
+
+  it("detects lengths no whole number of pieces can fill", () => {
+    expect(isFeasibleLength(1920, { hi: 600, lo: 500 })).toBe(false);
+    expect(isFeasibleLength(1800, { hi: 600, lo: 500 })).toBe(true);
+    expect(isFeasibleLength(5000, { hi: 120, lo: 100 })).toBe(true);
+  });
+
+  it("falls back to minimum-only cuts when the artboard cannot satisfy the limits", () => {
+    const params = readMosaicParams({ "layout.cellHeight": [500, 600], "layout.cellWidth": [500, 600], "layout.seed": 2 });
+    const cells = tessellate({ height: 1920, width: 1920, x: 0, y: 0 }, params.layout);
+    expectTiling(cells, { height: 1920, width: 1920, x: 0, y: 0 });
+    for (const cell of cells) expect(Math.min(cell.width, cell.height)).toBeGreaterThanOrEqual(500 - 1e-6);
+  });
+
+  it.each([0, 0.5, 1])("packs strictly square cells with the 1:1 lock (density %d)", (density) => {
+    const params = readMosaicParams({
+      "layout.cellHeight": [16, 1600],
+      "layout.cellWidth": [120, 480],
+      "layout.density": density,
+      "layout.square": true,
+      "layout.seed": 13,
+    });
+    expect(params.layout.minHeight).toBe(120);
+    expect(params.layout.maxHeight).toBe(480);
+    const cells = tessellate(ROOT, params.layout);
+    expectTiling(cells, ROOT);
+    for (const cell of cells) {
+      expect(cell.width).toBeCloseTo(cell.height, 6);
+      expect(cell.width).toBeGreaterThanOrEqual(120 - 1e-6);
+      expect(cell.width).toBeLessThanOrEqual(480 + 1e-6);
+    }
+    if (density === 0) expect(cells.some((cell) => cell.width > 120 + 1e-6)).toBe(true);
+  });
+
+  it("chooses an exact square module when the minimum does not divide the artboard", () => {
+    const portrait: Rect = { height: 1920, width: 1080, x: -540, y: -960 };
+    const params = readMosaicParams({ "layout.cellWidth": [111, 794], "layout.square": true });
+    const cells = tessellate(portrait, params.layout);
+    expectTiling(cells, portrait);
+    for (const cell of cells) {
+      expect(cell.width).toBeCloseTo(cell.height, 6);
+      expect(cell.width).toBeGreaterThanOrEqual(111);
     }
   });
 
@@ -134,8 +218,8 @@ describe("cell substrates", () => {
   });
 });
 
-describe("explode edges", () => {
-  const params = readMosaicParams({ "frame.edgeRemoval": 60, "frame.explode": true });
+describe("erosion", () => {
+  const params = readMosaicParams({ "frame.edgeRemoval": 60, "frame.mode": "erosion" });
   const scene = buildMosaicScene(ROOT, params);
   const pruned = (amount: number) =>
     scene.cells.map((rect, index) => isCellPruned(rect, ROOT, scene.seed, index, amount));
@@ -150,12 +234,121 @@ describe("explode edges", () => {
     expect(pruned(0).some(Boolean)).toBe(false);
     const perimeter = scene.cells.filter((rect) => touchesFrame(rect, ROOT)).length;
     expect(pruned(1).filter(Boolean).length).toBe(perimeter);
+    expect(visibleCells(scene).length).toBe(scene.cells.length - pruned(0.6).filter(Boolean).length);
   });
 
-  it("is disabled unless the toggle is on and the canvas is bounded", () => {
+  it("is disabled unless the mode is selected and the canvas is bounded", () => {
     expect(params.frame.edgeRemoval).toBeCloseTo(0.6);
-    expect(readMosaicParams({ "frame.edgeRemoval": 60, "frame.explode": false }).frame.edgeRemoval).toBe(0);
-    expect(readMosaicParams({ "frame.edgeRemoval": 60, "frame.explode": true }, { bounded: false }).frame.edgeRemoval).toBe(0);
+    expect(readMosaicParams({ "frame.edgeRemoval": 60, "frame.mode": "none" }).frame.edgeRemoval).toBe(0);
+    expect(readMosaicParams({ "frame.edgeRemoval": 60, "frame.mode": "explosion" }).frame.edgeRemoval).toBe(0);
+    expect(readMosaicParams({ "frame.edgeRemoval": 60, "frame.mode": "erosion" }, { bounded: false }).frame.mode).toBe("none");
+  });
+});
+
+describe("explosion", () => {
+  const explode = (amount: number) =>
+    buildMosaicScene(ROOT, readMosaicParams({ "frame.explosionAmount": amount, "frame.mode": "explosion", "layout.seed": 31 }));
+
+  it("deletes random cells anywhere, monotonically in the amount, without moving the rest", () => {
+    const scene = explode(40);
+    const deleted = (amount: number) => scene.cells.map((_, index) => isCellExploded(scene.seed, index, amount));
+    const low = deleted(0.2);
+    const high = deleted(0.6);
+    low.forEach((gone, index) => {
+      if (gone) expect(high[index]).toBe(true);
+    });
+    expect(deleted(0).some(Boolean)).toBe(false);
+    expect(deleted(1).every(Boolean)).toBe(true);
+    // Interior cells are eligible, unlike Erosion.
+    expect(scene.cells.some((rect, index) => high[index] && !touchesFrame(rect, ROOT))).toBe(true);
+
+    const visible = visibleCells(scene);
+    expect(visible.length).toBe(deleted(0.4).filter((gone) => !gone).length);
+    expect(visible.length).toBeLessThan(scene.cells.length);
+    expect(scene.cells).toEqual(explode(0).cells);
+  });
+
+  it("is off outside Explosion mode and on unbounded canvases", () => {
+    expect(readMosaicParams({ "frame.explosionAmount": 50, "frame.mode": "erosion" }).frame.explosionAmount).toBe(0);
+    expect(readMosaicParams({ "frame.explosionAmount": 50, "frame.mode": "explosion" }, { bounded: false }).frame.explosionAmount).toBe(0);
+    expect(readMosaicParams({ "frame.explosionAmount": 50, "frame.mode": "explosion" }).frame.edgeRemoval).toBe(0);
+  });
+});
+
+describe("pattern fills", () => {
+  it("assigns scanline and dot cells only when enabled, with per-cell axes in mixed mode", () => {
+    const off = buildMosaicScene(ROOT, readMosaicParams({}));
+    expect(off.styles.some((style) => style.fill === "scanlines" || style.fill === "dots")).toBe(false);
+    const params = readMosaicParams({
+      "fill.dither": false,
+      "fill.dots": true,
+      "fill.gradient": false,
+      "fill.scanlineDirection": "mixed",
+      "fill.scanlines": true,
+      "fill.solid": false,
+      "layout.cellHeight": [80, 200],
+      "layout.cellWidth": [80, 200],
+    });
+    const scene = buildMosaicScene(ROOT, params);
+    expect(new Set(scene.styles.map((style) => style.fill))).toEqual(new Set(["scanlines", "dots"]));
+    expect(new Set(scene.styles.map((style) => style.lineAxis))).toEqual(new Set(["horizontal", "vertical"]));
+  });
+
+  it("gives pattern cells one ink that stands out from the Background", () => {
+    const values = {
+      "fill.ascii": true,
+      "fill.dither": false,
+      "fill.dots": true,
+      "fill.gradient": false,
+      "fill.scanlines": true,
+      "fill.solid": false,
+      "layout.cellHeight": [80, 200],
+      "layout.cellWidth": [80, 200],
+      "palette.colors": ["#FFFFFF", "#0000FF", "#FFFFFE", "#000000"],
+    };
+    const onWhite = buildMosaicScene(ROOT, readMosaicParams({ ...values, "appearance.background": "#FFFFFF" }));
+    expect(new Set(onWhite.styles.map((style) => style.fill))).toEqual(new Set(["scanlines", "dots", "ascii"]));
+    expect(new Set(onWhite.styles.map((style) => style.colorInk))).toEqual(new Set([1, 3]));
+    onWhite.styles.forEach((style) => {
+      if (style.colorA === 1 || style.colorA === 3) expect(style.colorInk).toBe(style.colorA);
+    });
+    // Without a visible Background any palette color may ink.
+    const transparent = buildMosaicScene(ROOT, readMosaicParams({ ...values, "export.includeBackground": false }));
+    transparent.styles.forEach((style) => expect(style.colorInk).toBe(style.colorA));
+  });
+
+  it("reads one ASCII character, keeping whole graphemes", () => {
+    expect(readMosaicParams({ "fill.asciiChar": "#abc" }).fill.asciiChar).toBe("#");
+    expect(readMosaicParams({ "fill.asciiChar": "  " }).fill.asciiChar).toBe("*");
+    expect(readMosaicParams({ "fill.asciiChar": "👍🏽x" }).fill.asciiChar).toBe("👍🏽");
+  });
+
+  it("textures scanline strokes in thickness and opacity, and stays flat at zero texture", () => {
+    const cell: Rect = { height: 300, width: 600, x: 0, y: 0 };
+    const widths = (stroke: { points: readonly (readonly [number, number])[] }) => {
+      const half = stroke.points.length / 2;
+      return stroke.points.slice(0, half).map(([, y], i) => stroke.points[stroke.points.length - 1 - i]![1] - y);
+    };
+    const flat = scanlineStrokes(cell, cell, false, 0, { scanlineSpacing: 12, scanlineTexture: 0, scanlineThickness: 0.5 });
+    for (const stroke of flat) {
+      expect(stroke.opacity).toBe(1);
+      for (const width of widths(stroke)) expect(width).toBeCloseTo(6, 9);
+    }
+    // Strokes cover the whole cell height.
+    expect(flat.length).toBeGreaterThanOrEqual(300 / 12);
+
+    const organic = scanlineStrokes(cell, cell, false, 0, { scanlineSpacing: 12, scanlineTexture: 1, scanlineThickness: 0.5 });
+    const along = widths(organic[5]!);
+    expect(Math.max(...along) - Math.min(...along)).toBeGreaterThan(1);
+    const opacities = organic.map((stroke) => stroke.opacity);
+    expect(Math.max(...opacities) - Math.min(...opacities)).toBeGreaterThan(0.05);
+    expect(Math.min(...opacities)).toBeGreaterThanOrEqual(0.4);
+  });
+
+  it("keeps grain on gradients only", () => {
+    const params = readMosaicParams({ "grain.dither": true, "grain.gradient": false });
+    expect(params.grain).not.toHaveProperty("onDither");
+    expect(params.grain.enabled).toBe(false);
   });
 });
 
@@ -170,7 +363,8 @@ describe("dither modes", () => {
       "fill.ditherPattern": pattern,
       "fill.gradient": false,
       "fill.solid": false,
-      "layout.cellSize": [300, 600],
+      "layout.cellHeight": [300, 600],
+      "layout.cellWidth": [300, 600],
       "motion.ditherScroll": scroll,
     });
     return { params, scene: buildMosaicScene(ROOT, params) };

@@ -33,7 +33,10 @@ export function PanelHeader({
         data-panel-drag-handle=""
         data-slot="properties-panel-header"
       >
-        <p className="m-0 min-w-0 truncate text-xs-plus font-medium text-[color:var(--foreground)]">
+        <p
+          className="m-0 min-w-0 truncate text-xs-plus font-medium text-[color:var(--foreground)]"
+          data-slot="properties-panel-title"
+        >
           {title}
         </p>
         <div className="inline-flex shrink-0 items-center gap-1">

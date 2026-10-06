@@ -1,14 +1,17 @@
 /**
  * Mosaic renderer. The caller supplies a 2D context already transformed to
  * scene coordinates; the same function draws live preview, runtime image/video
- * export frames, Infinity neighbor tiles and GIF frames. Gradient and dither
- * cells (with their integrated grain) render through WebGL; solids in 2D.
+ * export frames, Infinity neighbor tiles and GIF frames. Framed cells render
+ * through one WebGL pass, with a Canvas 2D fallback.
  */
 
-import { evaluateCell, isCellPruned, type CellFrame } from "./cells";
+import { evaluateCell, isPatternFill, type CellFrame } from "./cells";
 import { computeDitherMask, type DitherMask } from "./dither";
 import { drawFillCells, type FillDraw } from "./fill-gl";
+import { visibleCells } from "./framing";
 import { mixRgb, rgbToCss } from "./palettes";
+import type { FillParams } from "./params";
+import { ASCII_FONT_STACK, asciiPitch, scanlineStrokes } from "./pattern-texture";
 import type { MosaicScene } from "./scene";
 import type { Rect } from "./tessellate";
 
@@ -53,7 +56,7 @@ function applyGradientStyle(ctx: CanvasRenderingContext2D, frame: CellFrame): vo
   ctx.fillStyle = style;
 }
 
-/** Canvas 2D fallback for dither cells when WebGL2 is unavailable (no grain). */
+/** Canvas 2D fallback for dither cells when WebGL2 is unavailable. */
 function drawDitherCell(ctx: CanvasRenderingContext2D, frame: CellFrame, mask: DitherMask, dotSize: number, drawRect: Rect): void {
   const { columns, rows } = mask;
   const scratch = getDitherScratch(columns, rows);
@@ -75,51 +78,97 @@ function drawDitherCell(ctx: CanvasRenderingContext2D, frame: CellFrame, mask: D
   ctx.imageSmoothingEnabled = smoothing;
 }
 
+/** Canvas 2D fallback for pattern cells: ink only, on a transparent ground. */
+function drawPatternCell(ctx: CanvasRenderingContext2D, frame: CellFrame, fill: FillParams, drawRect: Rect): void {
+  const { rect } = frame;
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(drawRect.x, drawRect.y, drawRect.width, drawRect.height);
+  ctx.clip();
+  ctx.fillStyle = rgbToCss(frame.ink);
+  const shiftOf = (spacing: number) => (((frame.scroll % 1) + 1) % 1) * spacing;
+
+  if (frame.fill === "scanlines") {
+    for (const stroke of scanlineStrokes(rect, drawRect, frame.lineAxis === "vertical", frame.scroll, fill)) {
+      ctx.globalAlpha = stroke.opacity;
+      ctx.beginPath();
+      stroke.points.forEach(([x, y], index) => (index === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y)));
+      ctx.closePath();
+      ctx.fill();
+    }
+  } else if (frame.fill === "dots") {
+    const spacing = fill.dotSpacing;
+    const radius = (spacing * fill.dotSize) / 2;
+    const shift = shiftOf(spacing);
+    ctx.beginPath();
+    for (let row = 0; row * spacing < drawRect.height; row += 1) {
+      const stagger = fill.dotGrid === "staggered" && row % 2 === 1 ? -spacing / 2 : 0;
+      for (let x = shift + stagger - spacing; x < drawRect.width + spacing; x += spacing) {
+        const cx = rect.x + x + spacing / 2;
+        const cy = rect.y + row * spacing + spacing / 2;
+        ctx.moveTo(cx + radius, cy);
+        ctx.arc(cx, cy, radius, 0, Math.PI * 2);
+      }
+    }
+    ctx.fill();
+  } else {
+    const [pitchX, pitchY] = asciiPitch(fill.asciiSize);
+    const shift = shiftOf(pitchX);
+    ctx.font = `${fill.asciiSize * 0.8}px ${ASCII_FONT_STACK}`;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    for (let y = 0; y < drawRect.height; y += pitchY) {
+      for (let x = shift - pitchX; x < drawRect.width + pitchX; x += pitchX) {
+        ctx.fillText(fill.asciiChar, rect.x + x + pitchX / 2, rect.y + y + pitchY / 2);
+      }
+    }
+  }
+  ctx.restore();
+}
+
 /** Draw one tile (the artboard or an Infinity neighbor) in scene coordinates. */
 export function drawMosaic(ctx: CanvasRenderingContext2D, options: MosaicDrawOptions): void {
   const { pixelRatio, progress, scene } = options;
   const { params, root } = scene;
   // Overlap shared edges by under one device pixel so anti-aliasing never
-  // leaves hairline seams; the root clip keeps the outer edges flush.
+  // leaves hairline seams; outer edges stay flush.
   const seam = 0.75 / Math.max(pixelRatio, 1e-3);
   const dotSize = params.fill.ditherScale;
-  const fills: FillDraw[] = [];
-  const solids: { drawRect: Rect; frame: CellFrame }[] = [];
 
-  scene.cells.forEach((rect, index) => {
+  const opaque: FillDraw[] = [];
+  const patterns: FillDraw[] = [];
+  for (const index of visibleCells(scene)) {
+    const rect = scene.cells[index]!;
     const style = scene.styles[index];
-    if (!style || isCellPruned(rect, root, scene.seed, index, params.frame.edgeRemoval)) return;
+    if (!style) continue;
     const frame = evaluateCell(rect, style, params, progress);
+    // Pattern cells keep their exact bounds and draw last, so their empty
+    // ground never overwrites a neighbor's seam overlap.
+    if (isPatternFill(frame.fill)) {
+      patterns.push({ drawRect: rect, frame });
+      continue;
+    }
     const drawRect: Rect = {
       height: rect.height + (rect.y + rect.height < root.y + root.height - 1e-6 ? seam : 0),
       width: rect.width + (rect.x + rect.width < root.x + root.width - 1e-6 ? seam : 0),
       x: rect.x,
       y: rect.y,
     };
-    if (frame.fill === "solid") solids.push({ drawRect, frame });
-    else fills.push({ drawRect, frame, ...(frame.fill === "dither" ? { mask: computeDitherMask(frame, dotSize, drawRect) } : {}) });
-  });
+    opaque.push({ drawRect, frame, ...(frame.fill === "dither" ? { mask: computeDitherMask(frame, dotSize, drawRect) } : {}) });
+  }
+  const draws = [...opaque, ...patterns];
 
-  ctx.save();
-  ctx.beginPath();
-  ctx.rect(root.x, root.y, root.width, root.height);
-  ctx.clip();
+  if (drawFillCells(ctx, draws, { fill: params.fill, grain: params.grain, progress })) return;
 
-  // Gradient and dither cells carry the integrated grain (WebGL); solids stay clean.
-  if (!drawFillCells(ctx, root, fills, params.grain, dotSize, progress)) {
-    for (const { drawRect, frame, mask } of fills) {
-      if (mask) {
-        drawDitherCell(ctx, frame, mask, dotSize, drawRect);
-        continue;
-      }
-      applyGradientStyle(ctx, frame);
+  for (const { drawRect, frame, mask } of draws) {
+    if (frame.fill === "dither" && mask) {
+      drawDitherCell(ctx, frame, mask, dotSize, drawRect);
+    } else if (isPatternFill(frame.fill)) {
+      drawPatternCell(ctx, frame, params.fill, drawRect);
+    } else {
+      if (frame.fill === "gradient") applyGradientStyle(ctx, frame);
+      else ctx.fillStyle = rgbToCss(frame.a);
       ctx.fillRect(drawRect.x, drawRect.y, drawRect.width, drawRect.height);
     }
   }
-
-  for (const { drawRect, frame } of solids) {
-    ctx.fillStyle = rgbToCss(frame.a);
-    ctx.fillRect(drawRect.x, drawRect.y, drawRect.width, drawRect.height);
-  }
-  ctx.restore();
 }

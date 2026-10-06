@@ -10,7 +10,6 @@ import { toolcraftRuntimeSetupSectionTitle } from "./runtime-section-titles";
 import {
   toolcraftCanvasInfinityTarget,
   toolcraftCanvasRotationLockedTarget,
-  toolcraftTimelinePanelExtendedTarget,
 } from "./runtime-targets";
 import {
   toolcraftOutputBackgroundToggleTarget,
@@ -222,22 +221,6 @@ function createInfinityCanvasControl(
   };
 }
 
-function createTimelineExtendedControl(
-  timeline: ResolvedToolcraftTimelinePanelSchema | undefined,
-): ToolcraftControlSchema | undefined {
-  if (!timeline?.enabled) {
-    return undefined;
-  }
-
-  return {
-    applicability: alwaysApplicable,
-    defaultValue: false,
-    label: "Timeline",
-    target: toolcraftTimelinePanelExtendedTarget,
-    type: "switch",
-  };
-}
-
 function createRuntimeSetupBackgroundControls({
   background,
   canvas,
@@ -363,7 +346,6 @@ export function createToolcraftRuntimeSetupSection({
   canvas,
   hasOrientationGizmo,
   productControls,
-  timeline,
 }: {
   background: ToolcraftRuntimeSetupBackgroundControls | undefined;
   canvas: ResolvedToolcraftAppSchema["canvas"];
@@ -378,7 +360,8 @@ export function createToolcraftRuntimeSetupSection({
   });
   const canvasControls = createCanvasControls(canvas);
   const renderScaleControl = createRenderScaleControl(canvas);
-  const timelineExtendedControl = createTimelineExtendedControl(timeline);
+  // Mosaic override: the timeline is always shown in full (TimelineSurface),
+  // so Settings has no Timeline switch.
 
   const section: ToolcraftControlSectionSchema & { id: string } = {
     controls: {
@@ -386,7 +369,6 @@ export function createToolcraftRuntimeSetupSection({
       ...canvasControls.controls,
       ...productControls,
       ...(renderScaleControl ? { canvasRenderScale: renderScaleControl } : {}),
-      ...(timelineExtendedControl ? { timelineExtended: timelineExtendedControl } : {}),
       ...(hasOrientationGizmo && canvas.enabled
         ? {
             rotationLocked: {
@@ -406,15 +388,6 @@ export function createToolcraftRuntimeSetupSection({
     layoutGroups: [
       ...backgroundControls.layoutGroups,
       ...canvasControls.layoutGroups,
-      ...(timelineExtendedControl && hasOrientationGizmo && canvas.enabled
-        ? [
-            {
-              columns: 2 as const,
-              controls: ["timelineExtended", "rotationLocked"],
-              layout: "inline" as const,
-            },
-          ]
-        : []),
     ],
     title: toolcraftRuntimeSetupSectionTitle,
   };

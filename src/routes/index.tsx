@@ -2,6 +2,7 @@ import { ToolcraftApp, ToolcraftDefaultsAuthoringProvider } from "@/toolcraft/ru
 
 import { useAppDefaultsAuthoring } from "../toolcraft/app-defaults-authoring";
 import { appComposition } from "../app/app-composition";
+import { BrandLogo } from "../app/brand-logo";
 
 export function AppHome(): React.JSX.Element {
   const authoring = useAppDefaultsAuthoring();
@@ -21,6 +22,7 @@ export function AppHome(): React.JSX.Element {
         schema={appComposition.schema}
         svgExportRenderer={appComposition.svgExportRenderer}
       />
+      <BrandLogo />
     </ToolcraftDefaultsAuthoringProvider>
   );
 }

@@ -14,9 +14,17 @@
       },
       "canvas.size.width": 1080,
       "canvas.size.height": 1920,
+      "frame.mode": "none",
+      "frame.edgeRemoval": 40,
+      "frame.explosionAmount": 25,
       "canvas.renderScale": 2,
       "layout.seed": 183,
-      "layout.cellSize": [
+      "layout.square": false,
+      "layout.cellWidth": [
+        111,
+        794
+      ],
+      "layout.cellHeight": [
         111,
         794
       ],
@@ -25,8 +33,6 @@
       "layout.varianceX": 0.29,
       "layout.varianceY": 0.79,
       "layout.splitBias": 0.25,
-      "frame.explode": false,
-      "frame.edgeRemoval": 40,
       "palette.colors": [
         "#0000FF",
         "#FFFFFF",
@@ -44,13 +50,27 @@
       "fill.ditherWeight": 3.8,
       "fill.ditherPattern": "bayer",
       "fill.ditherScale": 5,
+      "fill.scanlines": false,
+      "fill.scanlinesWeight": 1,
+      "fill.scanlineDirection": "horizontal",
+      "fill.scanlineSpacing": 12,
+      "fill.scanlineThickness": 50,
+      "fill.scanlineTexture": 60,
+      "fill.dots": false,
+      "fill.dotsWeight": 1,
+      "fill.dotGrid": "square",
+      "fill.dotSpacing": 16,
+      "fill.dotSize": 60,
+      "fill.ascii": false,
+      "fill.asciiWeight": 1,
+      "fill.asciiChar": "*",
+      "fill.asciiSize": 24,
       "motion.drift": 0.34,
       "motion.colorBreath": 0.6,
       "motion.hueSteps": 1,
       "motion.ditherScroll": 0,
-      "grain.amount": 0.19,
       "grain.gradient": true,
-      "grain.dither": true,
+      "grain.amount": 0.19,
       "grain.discreteness": 0.85,
       "grain.size": 1.5,
       "grain.speed": 1,
@@ -63,8 +83,8 @@
     },
     "canvas": {
       "offset": {
-        "x": 30.728803807993444,
-        "y": 63.70521496873573
+        "x": 0,
+        "y": 0
       },
       "size": {
         "height": 1920,
@@ -104,7 +124,7 @@
       }
     },
     "timeline": {
-      "currentTimeSeconds": 4.499537999999515,
+      "currentTimeSeconds": 1.141237999999468,
       "durationSeconds": 6,
       "expanded": false,
       "isLooping": true,

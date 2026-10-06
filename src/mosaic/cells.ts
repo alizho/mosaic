@@ -5,12 +5,18 @@
  * by easing their stop colors through a seeded tour of palette hues.
  */
 
-import type { DitherPatternId, FillParams, GradientKind, MosaicParams } from "./params";
+import type { DitherPatternId, FillParams, GradientKind, LineAxis, MosaicParams } from "./params";
 import { mixOklab, type Rgb } from "./palettes";
 import { createRng, hashInts, pickWeighted } from "./rng";
 import type { Rect } from "./tessellate";
 
-export type FillMode = "solid" | "gradient" | "dither";
+export type FillMode = "solid" | "gradient" | "dither" | "scanlines" | "dots" | "ascii";
+/** Pattern fills: marks in one ink color on an empty (transparent) ground. */
+export type PatternFill = "scanlines" | "dots" | "ascii";
+
+export function isPatternFill(fill: FillMode): fill is PatternFill {
+  return fill === "scanlines" || fill === "dots" || fill === "ascii";
+}
 
 export type CellStyle = Readonly<{
   angle: number;
@@ -18,35 +24,49 @@ export type CellStyle = Readonly<{
   centerY: number;
   colorA: number;
   colorB: number;
+  /** Palette index of the pattern ink. */
+  colorInk: number;
   fill: FillMode;
   gradientKind: GradientKind;
   /** Seeded palette indices each stop tours through (cyclic, after the base color). */
   huesA: readonly number[];
   huesB: readonly number[];
+  /** Scanline orientation for this cell (seeded when the direction is mixed). */
+  lineAxis: LineAxis;
   phase: number;
 }>;
 
 const MAX_HUE_STEPS = 6;
 
 export type CellFrame = Readonly<{
-  /** First color (gradient start / dither "off" color). */
+  /** First color (gradient start / dither "off" color / solid fill). */
   a: Rgb;
   /** Second color (gradient end / dither "on" color). */
   b: Rgb;
   fill: FillMode;
+  /** Ink for scanline, dot and ASCII cells. */
+  ink: Rgb;
   /** Scene-space gradient geometry shared by gradient and dither fills. */
   gradient:
     | Readonly<{ kind: "linear"; x0: number; x1: number; y0: number; y1: number }>
     | Readonly<{ cx: number; cy: number; kind: "radial"; radius: number }>;
+  lineAxis: LineAxis;
   /** Gradient mid-stop position: where the A/B blend reaches 50%. */
   mid: number;
   pattern: DitherPatternId;
-  /** Dither scroll in pattern cycles (ditherScroll × progress); whole cycles loop seamlessly. */
+  /** Pattern scroll in lattice periods (ditherScroll × progress); whole cycles loop seamlessly. */
   scroll: number;
   rect: Rect;
 }>;
 
 const TAU = Math.PI * 2;
+
+/** Minimum RGB distance between pattern ink and the Background. */
+const MIN_INK_CONTRAST = 48;
+
+function colorDistance(a: Rgb, b: Rgb): number {
+  return Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
+}
 
 function luminance([r, g, b]: Rgb): number {
   return 0.2126 * r + 0.7152 * g + 0.0722 * b;
@@ -57,6 +77,8 @@ export function createCellStyles(
   seed: number,
   fill: FillParams,
   palette: readonly Rgb[],
+  /** Visible Background color, or null when the canvas is transparent. */
+  background: Rgb | null = null,
 ): CellStyle[] {
   const paletteSize = palette.length;
   const lightest = palette.reduce((best, color, index) => (luminance(color) > luminance(palette[best]!) ? index : best), 0);
@@ -70,6 +92,9 @@ export function createCellStyles(
         ["solid", fill.solidWeight],
         ["gradient", fill.gradientWeight],
         ["dither", fill.ditherWeight],
+        ["scanlines", fill.scanlinesWeight],
+        ["dots", fill.dotsWeight],
+        ["ascii", fill.asciiWeight],
       ]) ?? "solid";
     const colorA = Math.floor(color() * paletteSize);
     // Many cells fade toward the lightest color, echoing washed color-field prints.
@@ -79,6 +104,13 @@ export function createCellStyles(
       : paletteSize > 1
         ? (colorA + 1 + Math.floor(color() * (paletteSize - 1))) % paletteSize
         : colorA;
+    // Pattern ink: the cell's own color, swapped for a seeded pick among the
+    // palette colors that stand out from the Background when it is too close.
+    const visible = palette.map((_, i) => i).filter((i) => !background || colorDistance(palette[i]!, background) >= MIN_INK_CONTRAST);
+    const colorInk =
+      visible.length === 0 || visible.includes(colorA)
+        ? colorA
+        : visible[Math.floor(createRng(hashInts(seed, index, 0x0e1a))() * visible.length)]!;
     const radialRoll = shape();
     const hue = createRng(hashInts(seed, index, 0x4e7b));
     const tour = (base: number) =>
@@ -92,6 +124,7 @@ export function createCellStyles(
       centerY: 0.2 + shape() * 0.6,
       colorA,
       colorB,
+      colorInk,
       fill: mode,
       gradientKind:
         fill.gradientType === "mixed"
@@ -101,6 +134,12 @@ export function createCellStyles(
           : fill.gradientType,
       huesA: tour(colorA),
       huesB: tour(colorB),
+      lineAxis:
+        fill.scanlineDirection === "mixed"
+          ? hashInts(seed, index, 0x11e5) % 2 === 0
+            ? "horizontal"
+            : "vertical"
+          : fill.scanlineDirection,
       phase: shape(),
     };
   });
@@ -158,7 +197,8 @@ export function evaluateCell(
     gradient = { kind: "linear", x0: cx - dx * half, x1: cx + dx * half, y0: cy - dy * half, y1: cy + dy * half };
   }
 
-  return { a, b, fill: style.fill, gradient, mid, pattern: params.fill.ditherPattern, rect, scroll };
+  const ink = palette[style.colorInk] ?? palette[0]!;
+  return { a, b, fill: style.fill, gradient, ink, lineAxis: style.lineAxis, mid, pattern: params.fill.ditherPattern, rect, scroll };
 }
 
 /** Gradient parameter t ∈ [0, 1] at a scene point. */
@@ -194,7 +234,7 @@ export function touchesFrame(rect: Rect, root: Rect): boolean {
 }
 
 /**
- * Explode Edges: perimeter cells are suppressed when their seeded roll falls
+ * Erosion: perimeter cells are suppressed when their seeded roll falls
  * under the removal fraction. Rolls are fixed per cell, so raising the amount
  * only ever removes more of the same cells.
  */

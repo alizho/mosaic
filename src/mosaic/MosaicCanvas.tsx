@@ -76,30 +76,31 @@ export function useFrameScheduler(draw: () => void): void {
 }
 
 /**
- * Exploded gaps must read as transparent holes, not artboard fill: switching
- * Explode Edges on turns the runtime Background off, and switching it off
- * restores the Background only if this sync was what turned it off.
+ * Deleted cells (Erosion or Explosion) must read as transparent holes, not
+ * artboard fill: entering either mode turns the runtime Background off, and
+ * leaving both restores the Background only if this sync turned it off.
  */
-function useExplodedGapsTransparent(): void {
+function useFramingGapsTransparent(): void {
   const dispatch = useToolcraftDispatch();
-  const explode = useToolcraftValue("frame.explode") === true;
+  const mode = useToolcraftValue("frame.mode");
+  const hasGaps = mode === "erosion" || mode === "explosion";
   const background = useToolcraftValue("export.includeBackground") !== false;
-  const previous = React.useRef(explode);
-  const disabledByExplode = React.useRef(false);
+  const previous = React.useRef(hasGaps);
+  const disabledByFraming = React.useRef(false);
   React.useEffect(() => {
-    if (explode && !previous.current && background) {
-      disabledByExplode.current = true;
-      dispatch({ label: "Explode Edges", target: "export.includeBackground", type: "controls.setValue", value: false });
-    } else if (!explode && previous.current && disabledByExplode.current && !background) {
-      dispatch({ label: "Explode Edges", target: "export.includeBackground", type: "controls.setValue", value: true });
+    if (hasGaps && !previous.current && background) {
+      disabledByFraming.current = true;
+      dispatch({ label: "Framing gaps", target: "export.includeBackground", type: "controls.setValue", value: false });
+    } else if (!hasGaps && previous.current && disabledByFraming.current && !background) {
+      dispatch({ label: "Framing gaps", target: "export.includeBackground", type: "controls.setValue", value: true });
     }
-    if (!explode) disabledByExplode.current = false;
-    previous.current = explode;
-  }, [background, dispatch, explode]);
+    if (!hasGaps) disabledByFraming.current = false;
+    previous.current = hasGaps;
+  }, [background, dispatch, hasGaps]);
 }
 
 export function MosaicCanvas(): React.JSX.Element | null {
-  useExplodedGapsTransparent();
+  useFramingGapsTransparent();
   const frame = useToolcraftProductSceneFrame();
   const rect: Rect | null = frame.kind === "ready" ? frame.rect : null;
   const canvasRef = React.useRef<HTMLCanvasElement>(null);

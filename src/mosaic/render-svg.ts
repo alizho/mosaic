@@ -4,13 +4,18 @@
  * rank k form a regular lattice (an SVG <pattern>) and are "on" wherever the
  * warped gradient exceeds that rank's threshold — a half-plane for linear and
  * the outside of a circle for radial gradients. Gradient grain is raster-only
- * and intentionally omitted; exploded perimeter cells are omitted as gaps.
+ * and intentionally omitted; eroded and exploded cells are omitted as gaps.
  * Floyd–Steinberg and Random dither cells export as merged runs of dots.
+ * Scanline, dot and ASCII cells are ink only on an empty ground (scanlines as
+ * textured polygons, dots and glyphs as SVG patterns).
  */
 
-import { evaluateCell, isCellPruned, unwarpParam, type CellFrame } from "./cells";
+import { evaluateCell, isPatternFill, unwarpParam, type CellFrame } from "./cells";
 import { BAYER_MATRIX, bayerScrollOffset, computeDitherMask, ditherThreshold } from "./dither";
+import { visibleCells } from "./framing";
 import { mixRgb, rgbToHex } from "./palettes";
+import type { FillParams } from "./params";
+import { ASCII_FONT_STACK, asciiPitch, scanlineStrokes } from "./pattern-texture";
 import type { MosaicScene } from "./scene";
 import type { Rect } from "./tessellate";
 
@@ -166,6 +171,78 @@ function appendDitherCell(builder: Builder, parent: SVGGElement, frame: CellFram
   parent.append(group);
 }
 
+/**
+ * Pattern cell: ink only, on an empty ground.
+ * Scanlines are polygons tracing their textured width with per-stroke
+ * opacity; dots and ASCII glyphs are userSpace patterns anchored at the cell.
+ */
+function appendPatternCell(builder: Builder, parent: SVGGElement, frame: CellFrame, fill: FillParams): void {
+  const { rect } = frame;
+  const ink = rgbToHex(frame.ink);
+  const clipId = builder.nextId("mosaic-clip");
+  const clip = el(builder, "clipPath", { id: clipId });
+  clip.append(el(builder, "rect", rectAttributes(rect)));
+  builder.defs.append(clip);
+  const group = el(builder, "g", { "clip-path": `url(#${clipId})`, "data-mosaic-fill": frame.fill });
+  const shift = ((frame.scroll % 1) + 1) % 1;
+
+  if (frame.fill === "scanlines") {
+    const strokes = el(builder, "g", { fill: ink });
+    for (const stroke of scanlineStrokes(rect, rect, frame.lineAxis === "vertical", frame.scroll, fill)) {
+      strokes.append(el(builder, "polygon", {
+        "fill-opacity": stroke.opacity,
+        points: stroke.points.map(([x, y]) => `${fmt(x)},${fmt(y)}`).join(" "),
+      }));
+    }
+    group.append(strokes);
+  } else {
+    const patternId = builder.nextId(`mosaic-${frame.fill}`);
+    let pattern: SVGPatternElement;
+    if (frame.fill === "dots") {
+      const spacing = fill.dotSpacing;
+      const radius = (spacing * fill.dotSize) / 2;
+      const staggered = fill.dotGrid === "staggered";
+      pattern = el(builder, "pattern", {
+        height: spacing * (staggered ? 2 : 1),
+        id: patternId,
+        patternUnits: "userSpaceOnUse",
+        width: spacing,
+        x: rect.x + shift * spacing,
+        y: rect.y,
+      });
+      pattern.append(el(builder, "circle", { cx: spacing / 2, cy: spacing / 2, fill: ink, r: radius }));
+      if (staggered) {
+        // Odd rows sit half a period left; draw both halves so the tile wraps.
+        for (const cx of [0, spacing]) pattern.append(el(builder, "circle", { cx, cy: spacing * 1.5, fill: ink, r: radius }));
+      }
+    } else {
+      const [pitchX, pitchY] = asciiPitch(fill.asciiSize);
+      pattern = el(builder, "pattern", {
+        height: pitchY,
+        id: patternId,
+        patternUnits: "userSpaceOnUse",
+        width: pitchX,
+        x: rect.x + shift * pitchX,
+        y: rect.y,
+      });
+      const glyph = el(builder, "text", {
+        "dominant-baseline": "central",
+        fill: ink,
+        "font-family": ASCII_FONT_STACK,
+        "font-size": fill.asciiSize * 0.8,
+        "text-anchor": "middle",
+        x: pitchX / 2,
+        y: pitchY / 2,
+      });
+      glyph.textContent = fill.asciiChar;
+      pattern.append(glyph);
+    }
+    builder.defs.append(pattern);
+    group.append(el(builder, "rect", { ...rectAttributes(rect), fill: `url(#${patternId})` }));
+  }
+  parent.append(group);
+}
+
 export function appendMosaicSvg(container: SVGGElement, scene: MosaicScene, progress: number): void {
   const doc = container.ownerDocument;
   const defs = doc.createElementNS(SVG_NS, "defs");
@@ -173,16 +250,20 @@ export function appendMosaicSvg(container: SVGGElement, scene: MosaicScene, prog
   const builder: Builder = { defs, doc, nextId: (prefix) => `${prefix}-${(counter += 1)}` };
   const cellsGroup = el(builder, "g", { "data-mosaic-cells": "true" });
   container.append(defs, cellsGroup);
+  const { fill } = scene.params;
 
-  scene.cells.forEach((rect, index) => {
+  for (const index of visibleCells(scene)) {
+    const rect = scene.cells[index]!;
     const style = scene.styles[index];
-    if (!style || isCellPruned(rect, scene.root, scene.seed, index, scene.params.frame.edgeRemoval)) return;
+    if (!style) continue;
     const frame = evaluateCell(rect, style, scene.params, progress);
     if (frame.fill === "dither") {
-      appendDitherCell(builder, cellsGroup, frame, scene.params.fill.ditherScale);
-      return;
+      appendDitherCell(builder, cellsGroup, frame, fill.ditherScale);
+    } else if (isPatternFill(frame.fill)) {
+      appendPatternCell(builder, cellsGroup, frame, fill);
+    } else {
+      const paint = frame.fill === "gradient" ? gradientFill(builder, frame) : rgbToHex(frame.a);
+      cellsGroup.append(el(builder, "rect", { ...rectAttributes(rect), "data-mosaic-fill": frame.fill, fill: paint }));
     }
-    const fill = frame.fill === "gradient" ? gradientFill(builder, frame) : rgbToHex(frame.a);
-    cellsGroup.append(el(builder, "rect", { ...rectAttributes(rect), "data-mosaic-fill": frame.fill, fill }));
-  });
+  }
 }

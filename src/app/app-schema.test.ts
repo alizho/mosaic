@@ -34,13 +34,13 @@ describe("appSchema", () => {
   it("binds every Mosaic control to the targets the renderer reads", () => {
     const targets = (id: string) => Object.values(productSection(id)?.controls ?? {}).map((control) => control.target);
     expect(targets("grid")).toEqual(
-      expect.arrayContaining(["layout.seed", "layout.cellSize", "layout.density", "layout.snap", "layout.varianceX", "layout.varianceY", "layout.splitBias"]),
+      expect.arrayContaining(["layout.seed", "layout.square", "layout.cellWidth", "layout.cellHeight", "layout.density", "layout.snap", "layout.varianceX", "layout.varianceY", "layout.splitBias"]),
     );
     expect(targets("palette")).toEqual(["palette.colors"]);
-    expect(targets("fills")).toEqual(expect.arrayContaining(["fill.solid", "fill.gradient", "fill.dither", "fill.ditherPattern"]));
+    expect(targets("fills")).toEqual(expect.arrayContaining(["fill.solid", "fill.gradient", "fill.dither", "fill.ditherPattern", "fill.scanlines", "fill.scanlineDirection", "fill.dots", "fill.dotGrid"]));
     expect(targets("motion")).toEqual(["motion.drift", "motion.colorBreath", "motion.hueSteps", "motion.ditherScroll"]);
-    expect(targets("runtime.setup")).toEqual(expect.arrayContaining(["frame.explode", "frame.edgeRemoval", "export.includeBackground"]));
-    expect(targets("grain")).toEqual(["grain.gradient", "grain.dither", "grain.amount", "grain.discreteness", "grain.size", "grain.speed"]);
+    expect(targets("runtime.setup")).toEqual(expect.arrayContaining(["frame.mode", "frame.edgeRemoval", "frame.explosionAmount", "export.includeBackground"]));
+    expect(targets("grain")).toEqual(["grain.gradient", "grain.amount", "grain.discreteness", "grain.size", "grain.speed"]);
     expect(targets("gif-export")).toEqual(["gif.fps", "gif.width"]);
   });
 

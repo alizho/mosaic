@@ -63,7 +63,7 @@ export async function renderGif(
 
     context.setTransform(1, 0, 0, 1, 0, 0);
     context.clearRect(0, 0, plan.width, plan.height);
-    // With Background on, flatten onto it; otherwise gaps (exploded edges)
+    // With Background on, flatten onto it; otherwise gaps (eroded edges, burst holes)
     // become 1-bit transparent GIF pixels.
     if (values["export.includeBackground"] !== false) {
       context.fillStyle = typeof values["appearance.background"] === "string" ? values["appearance.background"] : "#FFFFFF";
